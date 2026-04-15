@@ -99,7 +99,7 @@ compact 후 재시작
 ### 1. 저장소 클론
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/vault-rag.git
+git clone https://github.com/yoon20002000/VaultRAG.git
 cd vault-rag
 ```
 
