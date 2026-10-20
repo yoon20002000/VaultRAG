@@ -37,23 +37,26 @@ Claude Code는 세션을 시작할 때마다 기억이 초기화됩니다. 매�
 .claude/
 ├── skills/
 │   ├── vault-init/     # vault 초기화 (프로젝트 스캔 → 문서 자동 생성)
-│   ├── vault-load/     # 세션 시작 시 관련 문서 검색 → 컨텍스트 로드
-│   ├── vault-sync/     # 세션 내용 자동 저장 (컨벤션, 버그 해결, 결정사항)
-│   └── vault-job/      # 작업 단위 추적 (start / resume / done)
+│   ├── vault-load/     # 인덱스 우선 검색 → 컨텍스트 로드 (+ graphify 그래프 질의, 선택)
+│   ├── vault-sync/     # 세션 내용 저장 + 린트 · job 이력 롤오버 · vault git 동기화
+│   ├── vault-job/      # 작업 단위 추적 (start / resume / log / scope / done / list)
+│   └── vault-evolve/   # 누적 지식 합성 (패턴 승격 · 정제 · 모순 정리)
 ├── hooks/
-│   ├── pre-compact.sh           # /compact 전 vault-sync 강제
-│   └── session-start-compact.sh # compact 후 컨텍스트 자동 재주입
+│   └── lint_job_live_hook.py    # PostToolUse(Edit|Write): 라이브 job 문서 규칙 위반 시 차단
 └── settings.json       # 훅 등록 설정
 
-vault/                  # 사용자 로컬 (git 제외)
-├── session-context.md  # 세션마다 주입할 고정 컨텍스트 (직접 작성)
+vault/                  # 사용자 로컬 (프로젝트 repo 에서 제외, 자체 repo 로 관리 가능)
 ├── conventions/        # 코딩 컨벤션, 네이밍 규칙
 ├── architecture/       # 아키텍처 결정 기록 (ADR)
 ├── debugging/          # 버그 해결 기록
 ├── decisions/          # 설계 결정 이유
-├── jobs/               # 작업 추적 (active / done)
-└── tech-debt/          # 기술 부채 목록
+├── handoff/            # 다른 에이전트·세션 인계 문서
+├── jobs/               # 작업 추적 (한 폴더, frontmatter status 로 완료 표시)
+├── tech-debt/          # 기술 부채 목록
+└── ...                 # prd, ui-specs, daily, weekly, archive 등 (vault-init 이 생성)
 ```
+
+루트의 `*.skill` 파일은 같은 스킬을 claude.ai 업로드용으로 압축한 것이며, `.claude/skills/` 에서 재생성합니다.
 
 ---
 
@@ -62,28 +65,25 @@ vault/                  # 사용자 로컬 (git 제외)
 ```
 세션 시작
   └─ /vault-load [키워드]
-       ├─ session-context.md 항상 로드 (사용자 정의 고정 컨텍스트)
-       └─ 키워드 기반 grep → 관련 문서 최대 4개 추가 로드
+       ├─ 인덱스(제목·태그·섹션 목차) 먼저 검색 → 필요한 문서만 로드
+       ├─ job 문서는 통째로, 300줄 이상 문서는 섹션 인덱스로 부분 로드
+       └─ graphify 그래프가 있으면 이웃 노드까지 확장 (선택)
 
-코드 설계 요청
-  └─ vault/conventions/coding-style.md 자동 참조
-       → 규칙 확인 후 코드 생성
-       → 규칙 준수 여부 자가 검토
+작업 단위 추적
+  └─ /vault-job start | resume | log | scope | done
+       └─ 라이브 job 문서는 「교체」 방식 (▶ 하나, 미해결 ✅ 금지)
+            → PostToolUse 훅이 lint_job_live 로 즉시 검증
 
 세션 종료
   └─ /vault-sync
        ├─ 컨벤션 결정 / 버그 해결 / 아키텍처 변경 자동 감지
        ├─ 품질 기준 통과한 항목만 저장 (단순 사실, 의견 제외)
-       └─ vault/.sync-done 플래그 생성
+       ├─ handoff · job 린트, job 이력 롤오버
+       └─ vault 자체 git repo 로 동기화
 
-/compact 입력
-  └─ PreCompact 훅
-       ├─ .sync-done 있음 → compact 허용
-       └─ .sync-done 없음 → 차단 ("vault-sync 먼저 실행하세요")
-
-compact 후 재시작
-  └─ SessionStart 훅 (compact matcher)
-       └─ session-context.md → Claude 컨텍스트 자동 주입
+주기적
+  └─ /vault-evolve
+       └─ 패턴 승격 · 지식 정제 · 모순 정리 (due 여부는 check_evolve_due 로 판단)
 ```
 
 ---
@@ -93,32 +93,34 @@ compact 후 재시작
 ### 요구사항
 
 - Claude Code
-- macOS / Linux (훅 스크립트 bash 기반)
-- Obsidian (선택, CLI 없이도 동작)
+- Python 3 (스킬 스크립트·훅)
+- Windows + PowerShell 기준으로 작성됨 (스킬의 CLI 호출 예시가 PowerShell 도구 전제)
+- Obsidian + Obsidian CLI (선택, 없으면 grep 으로 대체)
+- graphify (선택, vault-load 그래프 질의 · `/vault-graph-update`)
 
 ### 1. 저장소 클론
 
 ```bash
 git clone https://github.com/yoon20002000/VaultRAG.git
-cd vault-rag
+cd VaultRAG
 ```
 
 ### 2. 스킬 설치
 
-```bash
-# 전역 설치 (모든 프로젝트에서 사용)
-cp -r .claude/skills/vault-* ~/.claude/skills/
+훅이 `.claude/skills/vault-sync/scripts/lint_job_live.py` 를 상대 경로로 찾으므로 **스킬은 프로젝트 `.claude/` 에 설치**하는 것을 권장합니다.
 
-# 또는 프로젝트별 설치
-cp -r .claude/skills/vault-* /your-project/.claude/skills/
+```powershell
+# 프로젝트별 설치 (권장)
+Copy-Item -Recurse .claude\skills\vault-* C:\your-project\.claude\skills\
+
+# 또는 전역 설치 (훅을 쓰지 않을 때)
+Copy-Item -Recurse .claude\skills\vault-* $HOME\.claude\skills\
 ```
 
 ### 3. 훅 설치
 
-```bash
-# 프로젝트 루트에서
-cp .claude/hooks/*.sh /your-project/.claude/hooks/
-chmod +x /your-project/.claude/hooks/*.sh
+```powershell
+Copy-Item .claude\hooks\lint_job_live_hook.py C:\your-project\.claude\hooks\
 ```
 
 ### 4. settings.json 설정
@@ -129,26 +131,14 @@ chmod +x /your-project/.claude/hooks/*.sh
 ```json
 {
   "hooks": {
-    "PreCompact": [
+    "PostToolUse": [
       {
-        "matcher": "",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start-compact.sh",
-            "timeout": 10
+            "command": "python -I \"C:/your-project/.claude/hooks/lint_job_live_hook.py\"",
+            "timeout": 15
           }
         ]
       }
@@ -156,6 +146,8 @@ chmod +x /your-project/.claude/hooks/*.sh
   }
 }
 ```
+
+> 이전 버전의 `PreCompact`(`.sync-done` 차단) · `SessionStart`(compact) 훅은 폐지되었습니다. 기존 settings.json 에 남아 있다면 제거하세요.
 
 ### 5. vault 초기화
 
@@ -167,32 +159,6 @@ Unity 프로젝트 루트에서 Claude Code를 실행한 뒤:
 
 Unity 프로젝트를 스캔해 `vault/` 폴더와 초기 문서들을 자동 생성합니다.
 
-### 6. session-context.md 작성
-
-```bash
-# vault/session-context.md 를 직접 편집
-```
-
-이 파일은 매 세션 시작 시 Claude에 자동으로 주입됩니다.  
-원하는 내용을 자유롭게 작성하세요. Claude가 이 파일을 수정하지 않습니다.
-
-```markdown
-# Session Context
-
-## 작업 중인 프로젝트
-마지막 날을 대비하는 우리의 자세 — 타워 디펜스 게임
-
-## 현재 집중 영역
-보스 페이즈 시스템 구현
-
-## 주의사항 / 규칙
-- MonoBehaviour Awake는 자기 초기화 전용
-- 이벤트는 반드시 EventBus 통해서
-
-## 참고 파일
-- Assets/Scripts/Boss/BossController.cs
-```
-
 ---
 
 ## 스킬 상세
@@ -202,13 +168,11 @@ Unity 프로젝트를 스캔해 `vault/` 폴더와 초기 문서들을 자동 �
 세션 시작 시 관련 문서를 검색하여 컨텍스트 준비.
 
 ```
-/vault-load               # session-context.md만 로드
-/vault-load 보스 AI FSM   # 키워드 관련 문서 추가 로드
+/vault-load 보스 AI FSM   # 키워드 관련 문서 로드
 ```
 
-**검색 우선순위**: obsidian-cli → grep → 폴더 구조 추론  
-**항상 로드**: `session-context.md`  
-**추가 로드**: 키워드 매칭 문서 최대 4개
+**검색**: 인덱스 우선 (`vault_search.py`, `build_section_index.py`) → graphify 이웃 확장(선택)  
+**로드 단위**: job 문서는 통째, 300줄 이상 문서는 섹션 단위
 
 ### `/vault-sync`
 
@@ -232,8 +196,17 @@ Unity 프로젝트를 스캔해 `vault/` 폴더와 초기 문서들을 자동 �
 ```
 /vault-job start "BossController FSM 구현"
 /vault-job resume    # 이어서 작업
+/vault-job log       # 진행 기록
+/vault-job scope     # 작업 범위 관련 문서 정리
 /vault-job done      # 완료 (vault-sync 자동 호출)
+/vault-job list
 ```
+
+job 문서는 이동하지 않고 frontmatter `status` 로 완료를 표시합니다.
+
+### `/vault-evolve`
+
+vault 에 쌓인 지식을 합성합니다. 반복된 패턴을 컨벤션으로 승격하고, 중복·낡은 서술을 정제하고, 서로 모순되는 문서를 정리합니다. 주 1회 또는 문서가 일정 수 누적됐을 때 실행하세요.
 
 ---
 
@@ -272,6 +245,7 @@ zip -r vault-load.zip vault-load/
 zip -r vault-sync.zip vault-sync/
 zip -r vault-init.zip vault-init/
 zip -r vault-job.zip vault-job/
+zip -r vault-evolve.zip vault-evolve/
 ```
 
 `claude.ai → Customize → Skills → + → Upload a skill`
@@ -282,13 +256,12 @@ zip -r vault-job.zip vault-job/
 
 ## 훅 동작 확인
 
-```bash
+```powershell
 # Claude Code 실행 후
 /hooks
 
-# 수동 테스트
-bash .claude/hooks/pre-compact.sh
-echo $?  # vault 없으면 0, sync-done 없으면 2
+# 수동 테스트 — 라이브 job 문서 린트 (규칙 위반 시 exit 2)
+python .claude\skills\vault-sync\scripts\lint_job_live.py vault\jobs\<job>.md
 ```
 
 ---
