@@ -41,6 +41,10 @@ Claude Code는 세션을 시작할 때마다 기억이 초기화됩니다. 매�
 │   ├── vault-sync/     # 세션 내용 저장 + 린트 · job 이력 롤오버 · vault git 동기화
 │   ├── vault-job/      # 작업 단위 추적 (start / resume / log / scope / done / list)
 │   └── vault-evolve/   # 누적 지식 합성 (패턴 승격 · 정제 · 모순 정리)
+├── commands/
+│   └── vault-graph-update.md    # /vault-graph-update: `/graphify vault --update` 단축 (vault 만 인덱싱)
+├── scripts/
+│   └── graphify_audit.py        # graphify 그래프 신선도 감사 (좀비 · 누적층 · 라벨 중복)
 ├── hooks/
 │   └── lint_job_live_hook.py    # PostToolUse(Edit|Write): 라이브 job 문서 규칙 위반 시 차단
 └── settings.json       # 훅 등록 설정
